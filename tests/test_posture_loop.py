@@ -88,6 +88,9 @@ async def test_shadow_writes_nothing():
     assert report.issues_opened == 0
     assert loop.service.store.list_cases() == []
     assert any("FIRING" in s for s in report.shadow_findings)
+    assert report.private_insights
+    assert all(item["private"] is True for item in report.private_insights)
+    assert all(item["learning_allowed"] is False for item in report.private_insights)
 
 
 async def test_case_only_opens_case_no_handoff():
@@ -96,6 +99,8 @@ async def test_case_only_opens_case_no_handoff():
     assert report.cases_opened == 1
     assert report.handoffs_built == 0
     assert report.issues_opened == 0
+    assert report.private_insights[0]["action_selected"] == "notify"
+    assert report.private_insights[0]["adversarial_review_required"] is True
     cases = loop.service.store.list_cases()
     assert len(cases) == 1 and cases[0].status == "triaged"
 

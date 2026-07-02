@@ -39,6 +39,7 @@ class PostureCycleReport:
     deferred: int = 0
     gated_out: list[dict[str, str]] = field(default_factory=list)
     shadow_findings: list[str] = field(default_factory=list)
+    private_insights: list[dict[str, Any]] = field(default_factory=list)
 
 
 class PostureLoop:
@@ -83,6 +84,16 @@ class PostureLoop:
         # shadow: report only, no store writes.
         if mode == "shadow":
             report.shadow_findings = [f"{f.check_id}:{f.key} ({'FIRING' if not f.passed else 'ok'})" for f in scan_report.findings]
+            report.private_insights = [
+                _private_insight_for_finding(
+                    finding,
+                    cycle_id=cycle_id,
+                    action_selected="stay_silent",
+                    sampling_class="withheld_logged" if not finding.passed else "sampled_quiet_interval",
+                    why_now="shadow mode: report only; no SOC persistence or learned suppression",
+                )
+                for finding in scan_report.findings
+            ]
             return report
 
         # Positive observations accumulate toward resolution.
@@ -95,9 +106,27 @@ class PostureLoop:
             decision = evaluate_gate(finding, mode=mode, settings=posture, ledger=self.ledger)
             if not decision.act:
                 report.gated_out.append({"check": finding.check_id, "key": finding.key, "reason": decision.reason})
+                report.private_insights.append(
+                    _private_insight_for_finding(
+                        finding,
+                        cycle_id=cycle_id,
+                        action_selected="stay_silent",
+                        sampling_class="withheld_logged",
+                        why_now=decision.reason,
+                    )
+                )
                 continue
             if acted >= posture.max_findings_per_cycle:
                 report.deferred += 1
+                report.private_insights.append(
+                    _private_insight_for_finding(
+                        finding,
+                        cycle_id=cycle_id,
+                        action_selected="stay_silent",
+                        sampling_class="withheld_logged",
+                        why_now="per-cycle finding cap reached",
+                    )
+                )
                 continue
 
             enriched = await self._enrich(finding, cycle_id=cycle_id)
@@ -109,6 +138,16 @@ class PostureLoop:
                 report.cases_opened += 1
             else:
                 report.cases_refreshed += 1
+            report.private_insights.append(
+                _private_insight_for_finding(
+                    enriched,
+                    cycle_id=cycle_id,
+                    action_selected="draft" if decision.build_handoff else "notify",
+                    sampling_class="surfaced",
+                    why_now=decision.reason,
+                    case_id=case.case_id,
+                )
+            )
 
             if decision.build_handoff:
                 bundle = self.service.request_handoff(case.case_id, enriched)
@@ -142,3 +181,44 @@ class PostureLoop:
         except Exception as exc:
             log.warning("soc_posture_enrich_failed", error=type(exc).__name__)
         return finding
+
+
+def _private_insight_for_finding(
+    finding: SecurityFinding,
+    *,
+    cycle_id: str,
+    action_selected: str,
+    sampling_class: str,
+    why_now: str,
+    case_id: str | None = None,
+) -> dict[str, Any]:
+    support_facts = [finding.summary or finding.title, finding.assertion]
+    support_facts.extend(ev.detail or ev.observed_value for ev in finding.evidence[:6])
+    return {
+        "schema_version": "0.1.0",
+        "loop": "soc",
+        "private": True,
+        "learning_allowed": False,
+        "adversarial_review_required": True,
+        "cycle_id": cycle_id,
+        "fingerprint": finding.fingerprint(),
+        "case_id": case_id,
+        "sampling_class": sampling_class,
+        "candidate_type": finding.case_type,
+        "candidate_source": f"soc_posture:{finding.check_id}",
+        "action_space": ["notify", "question", "draft", "stay_silent"],
+        "action_selected": action_selected,
+        "why_now": why_now,
+        "support_facts": [fact for fact in support_facts if fact][:8],
+        "expected_utility": {
+            "total": min(1.0, max(0.0, finding.score / 40.0)),
+            "components": {"finding_score": finding.score},
+            "rationale": [finding.severity, finding.confidence],
+        },
+        "interruption_cost": {
+            "total": 0.4 if action_selected == "stay_silent" else 0.25,
+            "components": {"soc_adversarial_review": 0.4 if action_selected == "stay_silent" else 0.25},
+            "rationale": ["SOC insight policy is not learned from untrusted telemetry in v1."],
+        },
+        "policy_version": "soc-private-insight.v1",
+    }
