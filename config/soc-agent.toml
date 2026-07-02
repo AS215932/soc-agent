@@ -1,0 +1,64 @@
+# AS215932 SOC Agent configuration.
+#
+# Precedence at runtime: SOC_* environment variable > this TOML table > code
+# default. Secrets are NEVER placed here — provider/handoff settings only name
+# the environment variable that should hold the secret value. Every
+# behaviour-changing switch below is deliberately off / shadow; production
+# enablement climbs the SOC_MODE rollout ladder via a human-gated deploy.
+
+enabled = false
+# shadow | case_only | handoff_dry | handoff_live
+mode = "shadow"
+
+[model]
+primary = "openrouter:deepseek/deepseek-v4-pro"
+fallbacks = ["openrouter:anthropic/claude-sonnet-4.6"]
+
+[posture]
+enabled = false
+interval_s = 900
+deep_scan_s = 3600
+max_findings_per_cycle = 1
+max_findings_per_day = 8
+max_cost_usd_per_day = 5.0
+severity_floor = "HIGH"
+max_probes_per_host_per_cycle = 4
+max_hosts_per_cycle = 3
+required_consecutive_passes = 3
+finding_cooldown_s = 21600
+handoff_enabled = false
+handoff_repo = "AS215932/network-operations"
+# Read-only checkout of network-operations (desired-state ground truth). Left
+# empty here; set via SOC_NETWORK_OPERATIONS_DIR on the deploy host.
+network_operations_dir = ""
+network_operations_pin_sha = ""
+golden_manifest_path = ""
+allowed_hosts = ["cr1-nl1", "cr1-de1", "cr1-ch1", "rtr", "vault", "noc", "mon", "loop"]
+enable_heavy_probes = false
+state_dir = "/var/lib/soc-agent/posture"
+
+[redteam]
+enabled = false
+# 0 = RT-0 only, 1 = RT-0 + RT-1 (non-invasive read-only). >=2 hard-refused.
+max_tier = 1
+human_gate_tier = 2
+allow_active_probes = false
+
+[guardrails]
+enable_approved_execution = false
+human_gate_all_mutations = true
+require_human_for_handoff = true
+
+[loop_handoff]
+enabled = false
+loop_identity = "soc"
+engineering_handoff_delivery_enabled = false
+engineering_handoff_transport = "github_issue"
+engineering_handoff_repo = "AS215932/network-operations"
+knowledge_context_enabled = false
+knowledge_context_role = "noc_shadow"
+case_verification_enabled = false
+case_verification_dry_run = true
+case_auto_resolve_enabled = false
+case_verification_required_consecutive_passes = 3
+callback_max_bytes = 65536

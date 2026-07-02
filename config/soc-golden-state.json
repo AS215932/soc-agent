@@ -1,0 +1,11 @@
+{
+  "asn": 215932,
+  "owned_prefixes": ["2a0c:b641:b50::/44"],
+  "core_routers": ["cr1-nl1", "cr1-de1", "cr1-ch1", "rtr"],
+  "transit_asns": [34872],
+  "ixp_asns": [42228],
+  "management_domains": ["as215932.net"],
+  "critical_services": ["vault-agent", "wireguard", "hyrule-mcp"],
+  "wireguard_handshake_max_age_s": 300,
+  "notes": "Security-relevant intended-state anchors for the SOC posture scanner. Authoritative desired state is the network-operations repo; this manifest supplies derived invariants (ASN, owned prefixes, transit/IXP ASNs)."
+}
