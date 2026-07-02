@@ -10,8 +10,10 @@ events and the SOC correlation flag.
 from __future__ import annotations
 
 import importlib
+import hashlib
+import json
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 FLAG_ENV = "HYRULE_SOC_AGENT_CORE_TRACE"
@@ -38,6 +40,27 @@ def emit_case_trace(state: Mapping[str, Any], *, phase: str) -> int:
         sink = sink_mod.sink_from_env(FLAG_ENV)
         count = 0
         for event in _events_from_state(state, phase=phase):
+            if sink.emit(event):
+                count += 1
+        return count
+    except Exception:
+        return 0
+
+
+def emit_loop_decision_envelopes(
+    insights: Sequence[Mapping[str, Any]],
+    *,
+    input_event: Mapping[str, Any] | None = None,
+) -> int:
+    """Emit one LoopDecisionEnvelope TraceEvent per private insight record."""
+    if not enabled() or not insights:
+        return 0
+    try:
+        sink_mod = importlib.import_module("agent_core.tracing.sink")
+        sink = sink_mod.sink_from_env(FLAG_ENV)
+        count = 0
+        for insight in insights:
+            event = _loop_decision_event(insight, input_event=input_event or {})
             if sink.emit(event):
                 count += 1
         return count
@@ -74,6 +97,58 @@ def _events_from_state(state: Mapping[str, Any], *, phase: str) -> list[Any]:
         },
     )
     return [summary_event]
+
+
+def _loop_decision_event(insight: Mapping[str, Any], *, input_event: Mapping[str, Any]) -> Any:
+    contracts = importlib.import_module("agent_core.contracts")
+    TraceEvent = getattr(contracts, "TraceEvent")
+    LoopDecisionEnvelope = getattr(contracts, "LoopDecisionEnvelope")
+    InsightDecisionRecord = getattr(contracts, "InsightDecisionRecord")
+
+    validated = InsightDecisionRecord.model_validate(dict(insight))
+    envelope = LoopDecisionEnvelope(
+        envelope_id=f"ldec_soc_{_stable_hash([validated.insight_id, validated.fingerprint, validated.action_selected])}",
+        loop="soc",
+        environment="production",
+        graph_id=GRAPH_ID,
+        node_id="posture_loop",
+        agent_role="soc_analyst",
+        run_id=_string_or_none(input_event.get("cycle_id")) or validated.run_id,
+        trace_id=validated.trace_id,
+        input_event={
+            **_jsonish(dict(input_event)),
+            "candidate_type": validated.candidate_type,
+            "candidate_source": validated.candidate_source,
+        },
+        retrieved_context=validated.evidence_refs,
+        decision=validated.action_selected,
+        evidence_refs=validated.evidence_refs,
+        proposed_action={
+            "candidate_type": validated.candidate_type,
+            "candidate_source": validated.candidate_source,
+            "why_now": validated.why_now,
+            "support_fact_count": len(validated.support_facts),
+        },
+        human_outcome=validated.human_feedback,
+        governance=validated.governance,
+        insight_id=validated.insight_id,
+        case_id=validated.case_id,
+        meta_case_id=validated.meta_case_id,
+        fingerprint=validated.fingerprint,
+        policy_version=validated.policy_version,
+    )
+    return TraceEvent(
+        event_type="loop_decision_envelope",
+        graph_id=GRAPH_ID,
+        node_id="loop_decision_envelope",
+        agent_role="soc_analyst",
+        environment="production",
+        run_id=envelope.run_id,
+        trace_id=envelope.trace_id,
+        case_id=envelope.case_id,
+        summary=f"SOC loop decision envelope for {validated.insight_id}",
+        payload={"loop_decision_envelope": envelope.model_dump(mode="json")},
+    )
 
 
 def _case_summary(state: Mapping[str, Any], *, phase: str) -> str:
@@ -127,3 +202,22 @@ def _string_or_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _jsonish(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _jsonish(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonish(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _stable_hash(parts: list[Any]) -> str:
+    payload = json.dumps(_jsonish(parts), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]

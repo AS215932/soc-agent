@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
+from agent_core.contracts import LoopDecisionEnvelope
+
 from app import agent_core_trace
 
 
@@ -28,7 +32,6 @@ def test_enabled_emits_to_jsonl_sink(monkeypatch, tmp_path):
     assert delivered == 1
     lines = [line for line in path.read_text().splitlines() if line.strip()]
     assert len(lines) == 1
-    import json
 
     event = json.loads(lines[0])
     assert event["case_id"] == "sec_case_abc"
@@ -37,3 +40,43 @@ def test_enabled_emits_to_jsonl_sink(monkeypatch, tmp_path):
     assert event["event_type"] == "soc_case_summary"
     # Untrusted-loop-text guard is stamped so downstream never re-feeds it to a model.
     assert event["payload"]["model_consumption_allowed"] is False
+
+
+def test_enabled_emits_loop_decision_envelope_from_private_insight(monkeypatch, tmp_path):
+    path = tmp_path / "trace.jsonl"
+    monkeypatch.setenv(agent_core_trace.FLAG_ENV, "1")
+    monkeypatch.setenv(f"{agent_core_trace.FLAG_ENV}_PATH", str(path))
+    insight = {
+        "insight_id": "ins_soc_test",
+        "loop": "soc",
+        "fingerprint": "fp1",
+        "sampling_class": "withheld_logged",
+        "candidate_type": "posture_finding",
+        "candidate_source": "soc_posture:rpki",
+        "evidence_refs": [{"kind": "mcp", "ref": "frr_vtysh_cmd"}],
+        "action_selected": "stay_silent",
+        "why_now": "shadow mode",
+        "governance": {
+            "sensitivity_class": "private",
+            "approval_tier": "operator",
+            "risk_class": "high",
+            "adversarial_review_required": True,
+            "learning_allowed": False,
+            "never_learn": True,
+            "policy_ids": ["soc-private-insight.v1"],
+        },
+    }
+
+    delivered = agent_core_trace.emit_loop_decision_envelopes(
+        [insight],
+        input_event={"cycle_id": "c1", "mode": "shadow"},
+    )
+
+    assert delivered == 1
+    event = json.loads(path.read_text(encoding="utf-8").strip())
+    assert event["event_type"] == "loop_decision_envelope"
+    envelope = LoopDecisionEnvelope.model_validate(event["payload"]["loop_decision_envelope"])
+    assert envelope.loop == "soc"
+    assert envelope.decision == "stay_silent"
+    assert envelope.input_event["cycle_id"] == "c1"
+    assert envelope.governance.never_learn is True
