@@ -107,6 +107,24 @@ async def test_private_insights_validate_against_agent_core_contract():
         assert validated.governance.never_learn is True
 
 
+async def test_posture_loop_emits_private_insight_envelopes(monkeypatch):
+    calls = []
+
+    def fake_emit(insights, *, input_event):
+        calls.append({"insights": insights, "input_event": input_event})
+        return len(insights)
+
+    monkeypatch.setattr("app.posture.loop.emit_loop_decision_envelopes", fake_emit)
+    loop = _loop("shadow")
+    report = await loop.run_once(cycle_id="c1")
+
+    assert report.private_insights
+    assert calls
+    assert calls[0]["insights"] == report.private_insights
+    assert calls[0]["input_event"]["cycle_id"] == "c1"
+    assert calls[0]["input_event"]["mode"] == "shadow"
+
+
 async def test_case_only_opens_case_no_handoff():
     loop = _loop("case_only")
     report = await loop.run_once(cycle_id="c1")

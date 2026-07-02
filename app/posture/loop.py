@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app import log
+from app.agent_core_trace import emit_loop_decision_envelopes
 from app.cases.models import SecurityFinding
 from app.cases.service import SecurityCaseService
 from app.config import SocAgentSettings
@@ -96,6 +97,7 @@ class PostureLoop:
                 )
                 for finding in scan_report.findings
             ]
+            emit_loop_decision_envelopes(report.private_insights, input_event=_input_event(report))
             return report
 
         # Positive observations accumulate toward resolution.
@@ -162,6 +164,7 @@ class PostureLoop:
                         if url:
                             self.service.record_issue(case.case_id, issue_url=url)
                             report.issues_opened += 1
+        emit_loop_decision_envelopes(report.private_insights, input_event=_input_event(report))
         return report
 
     async def _enrich(self, finding: SecurityFinding, *, cycle_id: str) -> SecurityFinding:
@@ -236,6 +239,21 @@ def _private_insight_for_finding(
             "policy_ids": ["soc-private-insight.v1"],
             "rationale": "SOC insight policy is not learned from untrusted telemetry in v1.",
         },
+    }
+
+
+def _input_event(report: PostureCycleReport) -> dict[str, Any]:
+    return {
+        "cycle_id": report.cycle_id,
+        "mode": report.mode,
+        "scanned_hosts": report.scanned_hosts,
+        "degraded": report.degraded,
+        "firing_count": report.firing_count,
+        "positive_observations": report.positive_observations,
+        "cases_opened": report.cases_opened,
+        "handoffs_built": report.handoffs_built,
+        "issues_opened": report.issues_opened,
+        "deferred": report.deferred,
     }
 
 
