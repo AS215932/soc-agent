@@ -14,6 +14,7 @@ from app.cases.models import (
     HandoffBundle,
     SecurityCase,
     SecurityCaseEvent,
+    SecurityCaseStatus,
     SecurityFinding,
     utc_now,
 )
@@ -28,7 +29,7 @@ from app.lhp import (
 )
 
 # Map an engineering-loop handoff status onto the SOC case status.
-_HANDOFF_TO_CASE_STATUS: dict[str, str] = {
+_HANDOFF_TO_CASE_STATUS: dict[str, SecurityCaseStatus] = {
     "accepted": "handoff_in_progress",
     "in_progress": "handoff_in_progress",
     "change_planned": "handoff_in_progress",
@@ -314,7 +315,7 @@ class SecurityCaseService:
     def _transition(
         self,
         case_id: str,
-        target: str,
+        target: SecurityCaseStatus,
         *,
         actor: str,
         event: str,

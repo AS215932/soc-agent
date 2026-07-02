@@ -50,6 +50,8 @@ class HyruleMCPClient:
         else:
             from mcp.client.stdio import StdioServerParameters, stdio_client
 
+            if self.command is None:
+                raise ValueError("Set HYRULE_MCP_CMD to use stdio mode")
             params = StdioServerParameters(command=self.command[0], args=list(self.command[1:]))
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:

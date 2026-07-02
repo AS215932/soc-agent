@@ -462,7 +462,7 @@ async def check_listening_ports(ctx: ScanContext, hosts: list[str]) -> list[Secu
     for host in hosts:
         allow = set(int(p) for p in allowlists.get(host, []))
         resp = await ctx.sockets(host)
-        if not _ok(resp):
+        if not isinstance(resp, dict) or not _ok(resp):
             continue
         listeners = _parse_listeners(resp)
         unexpected = [
@@ -556,7 +556,7 @@ async def check_dns_ownership(ctx: ScanContext, hosts: list[str]) -> list[Securi
         addresses: list[str] = []
         for qtype in ("AAAA", "A"):
             resp = await ctx.dig(resolver_host, domain, qtype)
-            if not _ok(resp):
+            if not isinstance(resp, dict) or not _ok(resp):
                 continue
             addresses.extend(_parse_dns_answers(resp))
         if not addresses:

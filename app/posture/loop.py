@@ -9,7 +9,9 @@ governance gate: ``shadow`` writes nothing; ``case_only`` opens cases;
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from app import log
@@ -194,18 +196,19 @@ def _private_insight_for_finding(
 ) -> dict[str, Any]:
     support_facts = [finding.summary or finding.title, finding.assertion]
     support_facts.extend(ev.detail or ev.observed_value for ev in finding.evidence[:6])
+    fingerprint = finding.fingerprint()
+    insight_key = f"{cycle_id}:{fingerprint}:{action_selected}:{why_now}"
     return {
         "schema_version": "0.1.0",
+        "insight_id": f"ins_soc_{hashlib.sha256(insight_key.encode('utf-8')).hexdigest()[:16]}",
         "loop": "soc",
-        "private": True,
-        "learning_allowed": False,
-        "adversarial_review_required": True,
-        "cycle_id": cycle_id,
-        "fingerprint": finding.fingerprint(),
+        "created_at": datetime.now(UTC).isoformat(),
+        "fingerprint": fingerprint,
         "case_id": case_id,
         "sampling_class": sampling_class,
         "candidate_type": finding.case_type,
         "candidate_source": f"soc_posture:{finding.check_id}",
+        "evidence_refs": _evidence_refs_for_finding(finding),
         "action_space": ["notify", "question", "draft", "stay_silent"],
         "action_selected": action_selected,
         "why_now": why_now,
@@ -220,5 +223,36 @@ def _private_insight_for_finding(
             "components": {"soc_adversarial_review": 0.4 if action_selected == "stay_silent" else 0.25},
             "rationale": ["SOC insight policy is not learned from untrusted telemetry in v1."],
         },
+        "risk_class": _risk_class_for_severity(finding.severity),
         "policy_version": "soc-private-insight.v1",
+        "budget_context": {"cycle_id": cycle_id},
+        "governance": {
+            "sensitivity_class": "private",
+            "approval_tier": "operator",
+            "risk_class": _risk_class_for_severity(finding.severity),
+            "adversarial_review_required": True,
+            "learning_allowed": False,
+            "never_learn": True,
+            "policy_ids": ["soc-private-insight.v1"],
+            "rationale": "SOC insight policy is not learned from untrusted telemetry in v1.",
+        },
     }
+
+
+def _evidence_refs_for_finding(finding: SecurityFinding) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for desired in finding.desired_state_refs[:6]:
+        ref = f"{desired.repo}:{desired.path}"
+        if desired.ref:
+            ref = f"{ref}#{desired.ref}"
+        refs.append({"kind": "desired_state", "ref": ref})
+    for evidence in finding.evidence[:6]:
+        ref = evidence.source_tool or evidence.query or evidence.label
+        if ref:
+            refs.append({"kind": "mcp", "ref": ref})
+    return refs
+
+
+def _risk_class_for_severity(severity: str) -> str:
+    mapping = {"HIGH": "high", "MEDIUM": "medium", "LOW": "low"}
+    return mapping.get(str(severity or "").upper(), "medium")

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.cases.models import SecurityEvidence, SecurityFinding
+from app.cases.models import SecurityEvidence, SecurityFinding, Severity
 from app.posture.desired_state import DesiredState
 from app.redteam.models import AttackPathHypothesis
 
@@ -24,7 +24,7 @@ class _PathTemplate:
     mitre_tactic: str
     mitre_techniques: tuple[str, ...]
     required_detection: str
-    severity: str
+    severity: Severity
 
 
 # category (of the firing finding) -> the attack path it enables
@@ -113,7 +113,7 @@ def detection_gap_findings(
         if hyp.would_detect:
             continue
         template = next((t for t in _TEMPLATES.values() if t.title == hyp.title), None)
-        severity = template.severity if template else "MEDIUM"
+        severity: Severity = template.severity if template else "MEDIUM"
         asset = hyp.affected_assets[0] if hyp.affected_assets else "as215932"
         findings.append(
             SecurityFinding(

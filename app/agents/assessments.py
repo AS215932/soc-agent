@@ -72,9 +72,9 @@ _SPECIALIST_PROMPTS: dict[str, str] = {
 }
 
 
-def build_specialist_agent(specialist: str) -> Agent:
+def build_specialist_agent(specialist: str) -> Agent[SpecialistDeps, SpecialistAssessment]:
     prompt = _SPECIALIST_PROMPTS.get(specialist, _BASE_RULES)
-    return Agent(
+    return Agent[SpecialistDeps, SpecialistAssessment](
         output_type=SpecialistAssessment,
         deps_type=SpecialistDeps,
         system_prompt=prompt,

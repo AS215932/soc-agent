@@ -6,6 +6,8 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
+from agent_core.contracts import InsightDecisionRecord
+
 from app.cases.policy import SecurityCasePolicy
 from app.cases.service import SecurityCaseService
 from app.cases.store import InMemorySecurityCaseStore
@@ -89,8 +91,20 @@ async def test_shadow_writes_nothing():
     assert loop.service.store.list_cases() == []
     assert any("FIRING" in s for s in report.shadow_findings)
     assert report.private_insights
-    assert all(item["private"] is True for item in report.private_insights)
-    assert all(item["learning_allowed"] is False for item in report.private_insights)
+    assert all(item["governance"]["sensitivity_class"] == "private" for item in report.private_insights)
+    assert all(item["governance"]["learning_allowed"] is False for item in report.private_insights)
+    assert all(item["governance"]["never_learn"] is True for item in report.private_insights)
+
+
+async def test_private_insights_validate_against_agent_core_contract():
+    loop = _loop("shadow")
+    report = await loop.run_once(cycle_id="c1")
+
+    assert report.private_insights
+    for insight in report.private_insights:
+        validated = InsightDecisionRecord.model_validate(insight)
+        assert validated.loop == "soc"
+        assert validated.governance.never_learn is True
 
 
 async def test_case_only_opens_case_no_handoff():
@@ -100,7 +114,7 @@ async def test_case_only_opens_case_no_handoff():
     assert report.handoffs_built == 0
     assert report.issues_opened == 0
     assert report.private_insights[0]["action_selected"] == "notify"
-    assert report.private_insights[0]["adversarial_review_required"] is True
+    assert report.private_insights[0]["governance"]["adversarial_review_required"] is True
     cases = loop.service.store.list_cases()
     assert len(cases) == 1 and cases[0].status == "triaged"
 
