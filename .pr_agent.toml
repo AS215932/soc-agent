@@ -1,0 +1,52 @@
+# PR-Agent (advisory) configuration for AS215932/soc-agent.
+# Replaces hosted Sourcery. Runs only on the unprivileged hyrule-public-pr
+# runner with read/comment-only perms, on our OpenRouter key.
+# Design: network-operations/docs/ci/pr-agent.md.
+
+[config]
+git_provider = "github"
+# deepseek-v4-flash / minimax-m2.7 are custom models -> need custom_model_max_tokens.
+model = "openrouter/deepseek/deepseek-v4-flash"
+fallback_models = ["openrouter/minimax/minimax-m2.7"]
+custom_model_max_tokens = 128000
+temperature = 0.2
+use_repo_settings_file = true
+publish_output = true
+
+[github_action_config]
+auto_review = true
+auto_describe = false
+auto_improve = true
+
+[pr_reviewer]
+require_security_review = true
+require_tests_review = true
+require_score_review = true
+require_estimate_effort_to_review = true
+extra_instructions = """
+This is soc-agent: the AS215932 security governance loop (posture scanning,
+attack-path modeling, LHP handoffs to engineering). It is READ-ONLY BY
+CONSTRUCTION and climbs the human-gated SOC_MODE ladder (shadow -> case_only
+-> handoff_dry -> handoff_live). HIGHEST RISK is anything that erodes that
+posture. Flag, with specifics:
+- any path that could mutate infrastructure: setting HYRULE_MCP_ENABLE_ACTIONS,
+  minting signed action authorizations, applying loop:approved labels, or
+  active red-team probes (SOC_REDTEAM_ALLOW_ACTIVE_PROBES must stay hard-off
+  in v1 per redteam-safety-policy.md);
+- SOC_MODE ladder bypasses: behavior above the configured rung, or defaults
+  flipping from shadow;
+- prompt-injection paths where untrusted telemetry/finding text reaches a
+  model or influences control flow (private insights are never_learn;
+  untrusted_loop_text markers must survive);
+- LHP contract drift from the vendored app/lhp.py (it must stay byte-faithful
+  to noc-agent's source of truth) or HMAC secret handling weakening
+  (SOC_LHP_ENGINEERING_SECRET is SOC's own, never NOC's);
+- verification weakening: No-False-All-Clear means a case never closes on
+  absence of evidence;
+- unpinned GitHub Actions, broad GITHUB_TOKEN permissions, added
+  pull_request_target, or pull_request jobs on privileged runner labels.
+Do not restate the diff; surface risk, posture erosion, missing tests.
+"""
+
+[pr_description]
+publish_description_as_comment = true
