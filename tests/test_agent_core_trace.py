@@ -84,3 +84,9 @@ def test_enabled_emits_loop_decision_envelope_from_private_insight(monkeypatch, 
     assert record["insight_id"] == "ins_soc_test"
     assert record["sampling_class"] == "withheld_logged"
     assert record["action_selected"] == "stay_silent"
+    # untrusted-telemetry guard fields, same as the case trace payload
+    assert event["payload"]["untrusted_loop_text"] is True
+    assert event["payload"]["model_consumption_allowed"] is False
+    # no explicit trace_id on the insight -> correlate with the posture cycle
+    assert event["trace_id"] == "c1"
+    assert envelope.trace_id == "c1"
