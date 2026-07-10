@@ -106,6 +106,10 @@ def _loop_decision_event(insight: Mapping[str, Any], *, input_event: Mapping[str
     InsightDecisionRecord = getattr(contracts, "InsightDecisionRecord")
 
     validated = InsightDecisionRecord.model_validate(dict(insight))
+    # Correlate with the posture cycle when the insight carries no explicit
+    # trace id (mirrors the case-trace fallback) so consumers can join the
+    # insight stream back to its cycle.
+    trace_id = validated.trace_id or _string_or_none(input_event.get("cycle_id"))
     envelope = LoopDecisionEnvelope(
         envelope_id=f"ldec_soc_{_stable_hash([validated.insight_id, validated.fingerprint, validated.action_selected])}",
         loop="soc",
@@ -114,7 +118,7 @@ def _loop_decision_event(insight: Mapping[str, Any], *, input_event: Mapping[str
         node_id="posture_loop",
         agent_role="soc_analyst",
         run_id=_string_or_none(input_event.get("cycle_id")) or validated.run_id,
-        trace_id=validated.trace_id,
+        trace_id=trace_id,
         input_event={
             **_jsonish(dict(input_event)),
             "candidate_type": validated.candidate_type,
@@ -147,7 +151,17 @@ def _loop_decision_event(insight: Mapping[str, Any], *, input_event: Mapping[str
         trace_id=envelope.trace_id,
         case_id=envelope.case_id,
         summary=f"SOC loop decision envelope for {validated.insight_id}",
-        payload={"loop_decision_envelope": envelope.model_dump(mode="json")},
+        payload={
+            # The envelope alone drops sampling_class/utility/cost/support_facts;
+            # IDQ/CGS evaluation needs the full record, so ship both together.
+            "loop_decision_envelope": envelope.model_dump(mode="json"),
+            "insight_decision_record": validated.model_dump(mode="json"),
+            # support_facts derive from finding text (untrusted telemetry) —
+            # same guard fields the case trace carries, so downstream consumers
+            # never treat this payload as model-safe input.
+            "untrusted_loop_text": True,
+            "model_consumption_allowed": False,
+        },
     )
 
 
