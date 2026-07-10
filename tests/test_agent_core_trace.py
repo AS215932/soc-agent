@@ -80,3 +80,7 @@ def test_enabled_emits_loop_decision_envelope_from_private_insight(monkeypatch, 
     assert envelope.decision == "stay_silent"
     assert envelope.input_event["cycle_id"] == "c1"
     assert envelope.governance.never_learn is True
+    record = event["payload"]["insight_decision_record"]
+    assert record["insight_id"] == "ins_soc_test"
+    assert record["sampling_class"] == "withheld_logged"
+    assert record["action_selected"] == "stay_silent"

@@ -147,7 +147,12 @@ def _loop_decision_event(insight: Mapping[str, Any], *, input_event: Mapping[str
         trace_id=envelope.trace_id,
         case_id=envelope.case_id,
         summary=f"SOC loop decision envelope for {validated.insight_id}",
-        payload={"loop_decision_envelope": envelope.model_dump(mode="json")},
+        payload={
+            # The envelope alone drops sampling_class/utility/cost/support_facts;
+            # IDQ/CGS evaluation needs the full record, so ship both together.
+            "loop_decision_envelope": envelope.model_dump(mode="json"),
+            "insight_decision_record": validated.model_dump(mode="json"),
+        },
     )
 
 
