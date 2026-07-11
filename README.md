@@ -13,9 +13,9 @@ The SOC Agent:
   control drift and attack paths (`SecurityFinding`s).
 - **Models** attack paths (RT-0) and runs non-invasive read-only validations
   (RT-1) against known-owned assets.
-- **Hands off** safe, reviewable remediation to the Engineering Loop via
-  **LHP-v1** as `loop:candidate` GitHub issues — and **verifies** the fix after
-  it ships.
+- **Hands off** safe, reviewable work to SOC, NOC, Engineering, or Knowledge
+  through the shared **agent-core LHP-v2 coordinator** — and verifies outcomes
+  before closure. LHP-v1/GitHub issues remain migration-only compatibility.
 
 ## Core policy (non-negotiable)
 
@@ -31,27 +31,31 @@ Reliability-Governor gate). Merges and production deploys remain human-gated by
 
 ## Rollout ladder (`SOC_MODE`)
 
-`shadow` → `case_only` → `handoff_dry` → `handoff_live`. Each rung is a strict
+`shadow` → `case_only` → `handoff_dry` → `handoff_live` → `probe_dry` →
+`probe_live`. Each rung is a strict
 superset of the previous one's side effects. Enablement is a deliberate,
 human-gated climb, gated by a live read-only shadow canary.
 
-| Mode | Scans | Opens `SecurityCase` | Builds LHP handoff | Opens `loop:candidate` issue |
+| Mode | Scans | Opens `SecurityCase` | Builds LHP handoff | External action |
 |------|:-:|:-:|:-:|:-:|
 | `shadow` | ✅ (report only) | — | — | — |
 | `case_only` | ✅ | ✅ | — | — |
 | `handoff_dry` | ✅ | ✅ | ✅ (no POST) | — |
-| `handoff_live` | ✅ | ✅ | ✅ | ✅ |
+| `handoff_live` | ✅ | ✅ | ✅ | Coordinator submission |
+| `probe_dry` | ✅ | ✅ | ✅ | Senior-approved RT-2 plans validate without packets |
+| `probe_live` | ✅ | ✅ | ✅ | Individually approved, bounded RT-2 probes may execute |
 
 ## Layout
 
 ```
 app/
   config.py            SOC_* settings (env > TOML > default; all off/shadow)
-  lhp.py               VENDORED verbatim from noc app/cases/lhp.py (wire contract)
+  coordination.py      shared agent-core LHP-v2 case/handoff/Knowledge adapter
+  lhp.py               LHP-v1 compatibility contract for staged migration
   cases/               SecurityCase substrate (models, store, service, policy, verifier)
   posture/             proactive read-only scanner + LHP handoff + verifier close-loop
   graph/ + agents/     LangGraph SOC-commander + PydanticAI security specialists
-  redteam/             RT-0 attack-path modeling + RT-1 read-only validation
+  redteam/             RT-0/RT-1 plus senior-approved, bounded RT-2 worker
   mcp_runtime.py       SOC read-only MCP tool allowlists (no mutating tools)
   main.py              FastAPI: LHP-v1 origin endpoints (fetch + signed callback) + /health
   socctl.py            local CLI: status, posture run-once, posture verify
@@ -65,12 +69,14 @@ docs/soc-agent/        architecture, security-scope, posture-checks, redteam-saf
 socctl status                              # print effective SOC settings
 socctl posture run-once --shadow           # one read-only scan cycle (the shadow canary)
 socctl posture verify                      # re-read live telemetry for cases awaiting verification
+socctl handoffs run-once                   # process inbound SOC capability requests
+socctl probes run-once                     # process approved RT-2 work (dry/live by SOC_MODE)
 soc-agent                                  # serve the FastAPI LHP endpoints (SOC_AGENT_HOST/PORT)
 ```
 
-The Engineering Loop fetches a handoff from `GET /loop-handoff/v1/soc/handoffs/{id}`
-and reports progress to `POST /webhook/engineering-loop/handoff-update` — both
-HMAC-signed with `SOC_LHP_ENGINEERING_SECRET`.
+Deployed processes use `HYRULE_COORDINATOR_URL`, `HYRULE_COORDINATOR_KEY_ID`,
+and `HYRULE_COORDINATOR_SECRET`. `SOC_DATABASE_URL` selects the shared Postgres
+case store; without it, JSONL remains a development/rollback backend.
 
 See `docs/soc-agent/` for architecture and the red-team safety policy, and
 `TESTING.md` for how to run the suite.

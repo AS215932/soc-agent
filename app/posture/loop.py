@@ -19,12 +19,14 @@ from app.agent_core_trace import emit_loop_decision_envelopes
 from app.cases.models import SecurityFinding
 from app.cases.service import SecurityCaseService
 from app.config import SocAgentSettings
+from app.coordination import SocCoordinator
 from app.graph.nodes import SocGraphRuntime
 from app.graph_runtime import SocGraphSession
 from app.posture.desired_state import DesiredState
 from app.posture.governance import evaluate_gate
 from app.posture.ledger import DailyLedger
 from app.posture.scanner import ScanContext, scan
+from app.redteam.exercise import RedTeamRunner
 
 
 @dataclass
@@ -38,7 +40,9 @@ class PostureCycleReport:
     cases_opened: int = 0
     cases_refreshed: int = 0
     handoffs_built: int = 0
+    handoffs_submitted: int = 0
     issues_opened: int = 0
+    redteam_hypotheses: int = 0
     deferred: int = 0
     gated_out: list[dict[str, str]] = field(default_factory=list)
     shadow_findings: list[str] = field(default_factory=list)
@@ -56,6 +60,8 @@ class PostureLoop:
         ledger: DailyLedger | None = None,
         handoff: Any = None,
         graph_runtime: SocGraphRuntime | None = None,
+        coordinator: SocCoordinator | None = None,
+        redteam_runner: RedTeamRunner | None = None,
         control_public_url: str = "",
     ) -> None:
         self.settings = settings
@@ -65,6 +71,8 @@ class PostureLoop:
         self.ledger = ledger or DailyLedger.load(settings.posture.state_dir)
         self.handoff = handoff
         self.graph_runtime = graph_runtime
+        self.coordinator = coordinator
+        self.redteam_runner = redteam_runner
         self.control_public_url = control_public_url
 
     def _hosts(self, override: list[str] | None) -> list[str]:
@@ -81,6 +89,14 @@ class PostureLoop:
 
         ctx = ScanContext(mcp_runtime=self.mcp_runtime, desired_state=self.desired_state, cycle_id=cycle_id)
         scan_report = await scan(ctx, hosts=scan_hosts, deep=True)
+        if self.redteam_runner is not None and self.settings.redteam.enabled:
+            exercise, gap_findings = await self.redteam_runner.run(
+                scan_report.firing,
+                objective_id=f"posture:{cycle_id}",
+                manifest_sha=self.desired_state.pin_sha,
+            )
+            report.redteam_hypotheses = len(exercise.hypotheses)
+            scan_report.findings.extend(gap_findings)
         report.degraded = scan_report.degraded
         report.firing_count = len(scan_report.firing)
 
@@ -152,12 +168,21 @@ class PostureLoop:
                     case_id=case.case_id,
                 )
             )
+            if self.coordinator is not None:
+                await self.coordinator.publish_case(case)
 
             if decision.build_handoff:
                 bundle = self.service.request_handoff(case.case_id, enriched)
                 if bundle is not None:
                     report.handoffs_built += 1
-                    if decision.post_handoff and self.handoff is not None:
+                    if decision.post_handoff and self.coordinator is not None:
+                        coordinated = await self.coordinator.request_engineering(case, enriched, bundle)
+                        if coordinated is not None:
+                            report.handoffs_submitted += 1
+                            refreshed = self.service.store.get_case(case.case_id)
+                            if refreshed is not None:
+                                await self.coordinator.publish_case(refreshed)
+                    elif decision.post_handoff and self.handoff is not None:
                         url = await self.handoff.ensure_candidate_issue(
                             enriched, case, bundle.handoff, base_url=self.control_public_url
                         )
@@ -172,6 +197,8 @@ class PostureLoop:
         assessment + evidence validation). The graph pauses at the HITL gate; the
         loop reads the enriched finding but does not resume — the ``loop:candidate``
         issue + human promotion to ``loop:approved`` is the real approval gate."""
+        if self.coordinator is not None and self.settings.loop_handoff.knowledge_context_enabled:
+            finding = await self.coordinator.enrich_with_knowledge(finding)
         if self.graph_runtime is None:
             return finding
         try:
@@ -252,6 +279,7 @@ def _input_event(report: PostureCycleReport) -> dict[str, Any]:
         "positive_observations": report.positive_observations,
         "cases_opened": report.cases_opened,
         "handoffs_built": report.handoffs_built,
+        "handoffs_submitted": report.handoffs_submitted,
         "issues_opened": report.issues_opened,
         "deferred": report.deferred,
     }

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from datetime import datetime, timezone
 from typing import Any
 
@@ -121,18 +122,33 @@ async def soc_lhp_handoff_update(request: Request, runtime: CaseServiceRuntime =
 
 
 @app.get("/control/soc/status")
-async def control_status(runtime: CaseServiceRuntime = Depends(get_runtime)) -> dict[str, Any]:
+async def control_status(
+    request: Request,
+    runtime: CaseServiceRuntime = Depends(get_runtime),
+) -> dict[str, Any]:
+    _require_control_request(request)
     settings = load_soc_settings()
     open_cases = [c for c in runtime.store.list_cases() if c.status not in {"resolved", "closed"}]
     return {
         "enabled": settings.enabled,
         "mode": settings.mode,
+        "coordinator_enabled": settings.coordination.enabled,
         "open_cases": len(open_cases),
         "cases": [
             {"case_id": c.case_id, "status": c.status, "severity": c.severity, "title": c.title}
             for c in open_cases[:50]
         ],
     }
+
+
+def _require_control_request(request: Request) -> None:
+    expected = os.getenv("SOC_CONTROL_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="SOC control token is not configured")
+    authorization = request.headers.get("authorization", "")
+    provided = authorization[len("Bearer ") :].strip() if authorization.startswith("Bearer ") else ""
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Invalid SOC control token")
 
 
 # --- LHP request enforcement ------------------------------------------------

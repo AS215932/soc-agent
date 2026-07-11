@@ -64,6 +64,8 @@ def test_invalid_mode_falls_back_to_shadow(monkeypatch):
         ("case_only", True, False, False),
         ("handoff_dry", True, True, False),
         ("handoff_live", True, True, True),
+        ("probe_dry", True, True, True),
+        ("probe_live", True, True, True),
     ],
 )
 def test_mode_ladder_predicates(mode, opens, builds, posts):

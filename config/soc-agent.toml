@@ -7,7 +7,7 @@
 # enablement climbs the SOC_MODE rollout ladder via a human-gated deploy.
 
 enabled = false
-# shadow | case_only | handoff_dry | handoff_live
+# shadow | case_only | handoff_dry | handoff_live | probe_dry | probe_live
 mode = "shadow"
 
 [model]
@@ -56,9 +56,15 @@ engineering_handoff_delivery_enabled = false
 engineering_handoff_transport = "github_issue"
 engineering_handoff_repo = "AS215932/network-operations"
 knowledge_context_enabled = false
-knowledge_context_role = "noc_shadow"
+knowledge_context_role = "soc_shadow"
 case_verification_enabled = false
 case_verification_dry_run = true
 case_auto_resolve_enabled = false
 case_verification_required_consecutive_passes = 3
 callback_max_bytes = 65536
+
+[coordination]
+enabled = false
+request_timeout_s = 15.0
+result_wait_s = 30.0
+poll_interval_s = 1.0
