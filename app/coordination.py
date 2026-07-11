@@ -109,9 +109,15 @@ class SocCoordinator:
             payload={
                 "role": "soc_shadow",
                 "query": finding.assertion or finding.summary or finding.title,
+                "input_trust": "untrusted_telemetry",
                 "resource": finding.resource,
                 "control_domain": finding.control_domain,
                 "data_classes": ["sanitized_finding_summary", "source_ref"],
+            },
+            constraints={
+                "untrusted_loop_text": True,
+                "model_execution": "forbidden",
+                "read_only": True,
             },
             evidence_refs=self._finding_refs(finding),
             idempotency_key=_stable_key(
@@ -174,6 +180,7 @@ class SocCoordinator:
                 "draft_pr_only": True,
                 "production_mutation": False,
                 "allowed_repository": "AS215932/network-operations",
+                "untrusted_loop_text": True,
             },
             correlation_id=case.case_id,
             idempotency_key=f"{bundle.handoff.idempotency_key}:lhp-v2",

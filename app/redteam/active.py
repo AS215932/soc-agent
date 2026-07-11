@@ -95,11 +95,10 @@ class ActiveProbeExecutor:
     @staticmethod
     async def _tcp_connect(target: str, port: int) -> dict[str, Any]:
         host = _host(target)
+        writer: asyncio.StreamWriter | None = None
         try:
             reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=3)
             del reader
-            writer.close()
-            await writer.wait_closed()
             return {"target": host, "port": port, "check": "tcp_connect", "reachable": True}
         except Exception as exc:
             return {
@@ -109,17 +108,26 @@ class ActiveProbeExecutor:
                 "reachable": False,
                 "error": type(exc).__name__,
             }
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
 
     @staticmethod
     async def _tls_handshake(target: str, port: int) -> dict[str, Any]:
         host = _host(target)
         context = ssl.create_default_context()
+        writer: asyncio.StreamWriter | None = None
         try:
-            reader, writer = await asyncio.wait_for(
+            reader, connected_writer = await asyncio.wait_for(
                 asyncio.open_connection(host, port, ssl=context, server_hostname=host), timeout=5
             )
+            writer = connected_writer
             del reader
-            ssl_object = writer.get_extra_info("ssl_object")
+            ssl_object = connected_writer.get_extra_info("ssl_object")
             observation = {
                 "target": host,
                 "port": port,
@@ -128,8 +136,6 @@ class ActiveProbeExecutor:
                 "protocol": ssl_object.version() if ssl_object else "unknown",
                 "cipher": ssl_object.cipher()[0] if ssl_object and ssl_object.cipher() else "unknown",
             }
-            writer.close()
-            await writer.wait_closed()
             return observation
         except Exception as exc:
             return {
@@ -139,6 +145,13 @@ class ActiveProbeExecutor:
                 "negotiated": False,
                 "error": type(exc).__name__,
             }
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
 
     @staticmethod
     async def _http_headers(target: str) -> dict[str, Any]:

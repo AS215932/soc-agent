@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -90,6 +91,9 @@ async def test_soc_uses_knowledge_and_publishes_scope_bound_work() -> None:
     )
     enriched = await coordinator.enrich_with_knowledge(finding)
     assert enriched.context_refs == ["ctx_soc_1", "policy_soc_1", "claim_rpki"]
+    assert fake.created[0].payload["input_trust"] == "untrusted_telemetry"
+    assert fake.created[0].constraints["untrusted_loop_text"] is True
+    assert fake.created[0].constraints["model_execution"] == "forbidden"
 
     case = SecurityCase(
         case_id="sec_case_1",
@@ -104,6 +108,7 @@ async def test_soc_uses_knowledge_and_publishes_scope_bound_work() -> None:
     assert handoff.envelope.approval_tier == "senior"
     assert handoff.envelope.capability == "engineering.draft_pr"
     assert handoff.envelope.constraints["draft_pr_only"] is True
+    assert handoff.envelope.constraints["untrusted_loop_text"] is True
     assert handoff.envelope.context_refs[0].ref == "ctx_soc_1"
 
     proposal = await coordinator.propose_learning(case)
@@ -177,3 +182,26 @@ async def test_rt2_dry_run_requires_bound_senior_approval() -> None:
 def test_coordination_defaults_off() -> None:
     settings = SocAgentSettings(coordination=CoordinationSettings())
     assert settings.coordination.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_tcp_probe_always_closes_the_stream(monkeypatch) -> None:
+    class Writer:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            raise ConnectionResetError("peer reset during close")
+
+    writer = Writer()
+
+    async def open_connection(host: str, port: int):  # type: ignore[no-untyped-def]
+        return object(), writer
+
+    monkeypatch.setattr(asyncio, "open_connection", open_connection)
+    result = await ActiveProbeExecutor._tcp_connect("web.as215932.net", 443)
+    assert result["reachable"] is True
+    assert writer.closed is True
