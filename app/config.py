@@ -8,7 +8,8 @@ that should hold the secret value.
 
 Every behaviour-changing switch defaults **off / shadow**. Enabling the SOC
 Agent in production is a deliberate, human-gated climb up the ``SOC_MODE``
-rollout ladder (``shadow`` → ``case_only`` → ``handoff_dry`` → ``handoff_live``).
+    rollout ladder (``shadow`` → ``case_only`` → ``handoff_dry`` →
+    ``handoff_live`` → ``probe_dry`` → ``probe_live``).
 """
 
 from __future__ import annotations
@@ -34,7 +35,14 @@ LOOP_CONSOLE_SECRET_ENV = "SOC_LOOP_CONSOLE_SECRET"
 # The SOC_MODE rollout ladder. Each rung is a strict superset of side effects of
 # the one before it. ``SOC_MODE`` is authoritative over any legacy ``*_SHADOW``
 # style flag.
-SOC_MODES = ("shadow", "case_only", "handoff_dry", "handoff_live")
+SOC_MODES = (
+    "shadow",
+    "case_only",
+    "handoff_dry",
+    "handoff_live",
+    "probe_dry",
+    "probe_live",
+)
 DEFAULT_MODE = "shadow"
 
 load_dotenv()
@@ -126,9 +134,7 @@ class LoopHandoffSettings:
     knowledge_context_enabled: bool = False
     knowledge_export_sqlite: str = "/opt/noc-knowledge/exports/knowledge.sqlite"
     knowledge_export_manifest: str = "/opt/noc-knowledge/exports/manifest.json"
-    # No soc_shadow context-pack role exists in the knowledge repo yet; borrow
-    # noc_shadow until one lands (see plan open question / knowledge follow-up).
-    knowledge_context_role: str = "noc_shadow"
+    knowledge_context_role: str = "soc_shadow"
     case_verification_enabled: bool = False
     case_verification_dry_run: bool = True
     case_auto_resolve_enabled: bool = False
@@ -136,6 +142,16 @@ class LoopHandoffSettings:
     case_verification_required_consecutive_passes: int = 3
     callback_max_bytes: int = 65536
     engineering_secret_configured: bool = False
+
+
+@dataclass(frozen=True)
+class CoordinationSettings:
+    """Neutral agent-core coordinator integration. Secrets stay in environment."""
+
+    enabled: bool = False
+    request_timeout_s: float = 15.0
+    result_wait_s: float = 30.0
+    poll_interval_s: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -147,6 +163,7 @@ class SocAgentSettings:
     redteam: RedTeamSettings = field(default_factory=RedTeamSettings)
     guardrails: GuardrailSettings = field(default_factory=GuardrailSettings)
     loop_handoff: LoopHandoffSettings = field(default_factory=LoopHandoffSettings)
+    coordination: CoordinationSettings = field(default_factory=CoordinationSettings)
     source_path: str | None = None
     load_errors: list[str] = field(default_factory=list)
 
@@ -156,17 +173,23 @@ class SocAgentSettings:
 
 def mode_opens_cases(mode: str) -> bool:
     """case_only and above persist SecurityCases."""
-    return mode in {"case_only", "handoff_dry", "handoff_live"}
+    return mode in {"case_only", "handoff_dry", "handoff_live", "probe_dry", "probe_live"}
 
 
 def mode_builds_handoff(mode: str) -> bool:
     """handoff_dry and above build the LHP handoff + render the issue body."""
-    return mode in {"handoff_dry", "handoff_live"}
+    return mode in {"handoff_dry", "handoff_live", "probe_dry", "probe_live"}
 
 
 def mode_posts_handoff(mode: str) -> bool:
     """Only handoff_live performs the external GitHub write."""
-    return mode == "handoff_live"
+    return mode in {"handoff_live", "probe_dry", "probe_live"}
+
+
+def mode_executes_active_probes(mode: str) -> bool:
+    """Only the final rung may execute an individually senior-approved RT-2 plan."""
+
+    return mode == "probe_live"
 
 
 def _normalize_mode(value: str, errors: list[str] | None = None) -> str:
@@ -215,6 +238,7 @@ def load_settings() -> SocAgentSettings:
         redteam=_redteam_settings(data.get("redteam", {}), errors),
         guardrails=_guardrail_settings(data.get("guardrails", {}), errors),
         loop_handoff=_loop_handoff_settings(data.get("loop_handoff", {}), errors),
+        coordination=_coordination_settings(data.get("coordination", {}), errors),
         source_path=str(source) if source else None,
         load_errors=errors,
     )
@@ -237,6 +261,7 @@ def load_soc_settings() -> SocAgentSettings:
         redteam=load_redteam_settings(base.redteam),
         guardrails=load_guardrail_settings(base.guardrails),
         loop_handoff=load_loop_handoff_settings(base.loop_handoff),
+        coordination=load_coordination_settings(base.coordination),
         source_path=base.source_path,
         load_errors=errors,
     )
@@ -320,6 +345,16 @@ def load_loop_handoff_settings(base: LoopHandoffSettings | None = None) -> LoopH
         ),
         callback_max_bytes=_env_int("SOC_LHP_CALLBACK_MAX_BYTES", base.callback_max_bytes),
         engineering_secret_configured=bool(os.getenv(LHP_ENGINEERING_SECRET_ENV, "").strip()),
+    )
+
+
+def load_coordination_settings(base: CoordinationSettings | None = None) -> CoordinationSettings:
+    base = base if base is not None else load_settings().coordination
+    return CoordinationSettings(
+        enabled=_env_bool("SOC_COORDINATOR_ENABLED", base.enabled),
+        request_timeout_s=_env_float("SOC_COORDINATOR_REQUEST_TIMEOUT_S", base.request_timeout_s),
+        result_wait_s=_env_float("SOC_COORDINATOR_RESULT_WAIT_S", base.result_wait_s),
+        poll_interval_s=_env_float("SOC_COORDINATOR_POLL_INTERVAL_S", base.poll_interval_s),
     )
 
 
@@ -427,6 +462,20 @@ def _loop_handoff_settings(table: Any, errors: list[str]) -> LoopHandoffSettings
         ),
         callback_max_bytes=_int_value(table, "callback_max_bytes", d.callback_max_bytes, errors),
         engineering_secret_configured=False,
+    )
+
+
+def _coordination_settings(table: Any, errors: list[str]) -> CoordinationSettings:
+    if not isinstance(table, dict):
+        if table not in ({}, None):
+            errors.append("[coordination] must be a TOML table")
+        return CoordinationSettings()
+    d = CoordinationSettings()
+    return CoordinationSettings(
+        enabled=_bool_value(table, "enabled", d.enabled, errors),
+        request_timeout_s=_float_value(table, "request_timeout_s", d.request_timeout_s, errors),
+        result_wait_s=_float_value(table, "result_wait_s", d.result_wait_s, errors),
+        poll_interval_s=_float_value(table, "poll_interval_s", d.poll_interval_s, errors),
     )
 
 

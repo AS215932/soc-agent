@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from app.config import RedTeamSettings
 from app.redteam.models import tier_num
+from agent_core.contracts import HandoffRecord
 
 
 class RedTeamRefused(RuntimeError):
@@ -42,3 +43,18 @@ class RedTeamGate:
 
     def active_probes_allowed(self) -> bool:
         return self.settings.enabled and self.settings.allow_active_probes
+
+    def require_approved_rt2(self, record: HandoffRecord) -> None:
+        """Authorize only a coordinator-bound, senior-approved RT-2 work item."""
+
+        if not self.settings.enabled or not self.settings.allow_active_probes:
+            raise RedTeamRefused("RT-2 executor is disabled by the global kill switch")
+        if self.settings.max_tier < 2:
+            raise RedTeamRefused("RT-2 exceeds SOC_REDTEAM_MAX_TIER")
+        if record.envelope.capability != "soc.active_probe.rt2":
+            raise RedTeamRefused("handoff does not request the RT-2 capability")
+        approval = record.approval
+        if approval is None or approval.decision != "approved" or approval.approver_role != "senior":
+            raise RedTeamRefused("RT-2 requires an immutable senior Observatory approval")
+        if approval.scope_hash != record.envelope.scope_hash:
+            raise RedTeamRefused("RT-2 approval scope hash does not match the probe plan")

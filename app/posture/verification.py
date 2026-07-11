@@ -16,6 +16,7 @@ from app import log
 from app.cases.models import SecurityCase
 from app.cases.service import SecurityCaseService
 from app.cases.verifier import SecurityVerifier
+from app.coordination import SocCoordinator
 from app.posture.desired_state import DesiredState
 from app.posture.scanner import ScanContext, scan
 
@@ -41,11 +42,13 @@ class PostureVerificationLoop:
         verifier: SecurityVerifier,
         mcp_runtime: Any,
         desired_state: DesiredState,
+        coordinator: SocCoordinator | None = None,
     ) -> None:
         self.service = service
         self.verifier = verifier
         self.mcp_runtime = mcp_runtime
         self.desired_state = desired_state
+        self.coordinator = coordinator
 
     async def run_once(self, *, cycle_id: str = "verify") -> VerificationCycleReport:
         report = VerificationCycleReport(cycle_id=cycle_id)
@@ -86,5 +89,17 @@ class PostureVerificationLoop:
         if result is not None and result.resolved:
             report.resolved.append(case.case_id)
             log.info("soc_verify_resolved", case_id=case.case_id, host=host)
+            resolved = self.service.store.get_case(case.case_id) or case
+            if self.coordinator is not None:
+                await self.coordinator.publish_case(resolved)
+                await self.coordinator.verify_handoffs(
+                    resolved,
+                    passed=True,
+                    summary="SOC observed the required consecutive healthy live-state checks",
+                )
+                await self.coordinator.propose_learning(resolved)
         elif not match.passed:
             report.still_failing.append(case.case_id)
+            if self.coordinator is not None:
+                current = self.service.store.get_case(case.case_id) or case
+                await self.coordinator.publish_case(current)

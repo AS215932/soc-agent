@@ -204,6 +204,9 @@ class SecurityFinding(BaseModel):
     verification_objective_type: str = "posture_recheck"
     acceptance_criteria: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
+    # Cited Knowledge context-pack/claim references returned through LHP-v2.
+    # Only identifiers are retained here; raw context is never learned from a finding.
+    context_refs: list[str] = Field(default_factory=list)
     # agent-core SourceRef refs are attached at projection time (summaries.py).
     detected_at: str = Field(default_factory=utc_now)
     score: float = Field(default=0.0, ge=0.0)
@@ -219,6 +222,7 @@ class SecurityFinding(BaseModel):
         self.assertion = sanitize_label(self.assertion, limit=500)
         self.mitre_tactics = [sanitize_label(t, limit=40) for t in self.mitre_tactics][:20]
         self.mitre_techniques = [sanitize_label(t, limit=40) for t in self.mitre_techniques][:20]
+        self.context_refs = [sanitize_label(ref, limit=300) for ref in self.context_refs][:40]
         self.observed_state = _bounded_mapping(self.observed_state)
         if not self.score:
             # Rank by severity then confidence so the loop acts on the most

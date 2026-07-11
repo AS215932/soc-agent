@@ -7,6 +7,7 @@ authoritative operational state. These functions never mutate.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from agent_core.contracts.evidence import EvidencePacket, SourceRef
@@ -29,9 +30,11 @@ from app.cases.models import SecurityCase, SecurityFinding
 LHP_SCHEMA_VERSION = "lhp.v1"
 
 
-def _dt(value: str) -> str | None:
-    """agent-core datetime fields parse ISO strings; empty -> None."""
-    return value or None
+def _dt(value: str) -> datetime | None:
+    """Parse the SOC-local ISO timestamp for the typed shared read model."""
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def security_case_summary(case: SecurityCase) -> CaseSummary:

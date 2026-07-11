@@ -25,13 +25,19 @@ def _build_loop(settings, *, force_shadow: bool):
     from app.posture.desired_state import DesiredState
     from app.posture.loop import PostureLoop
     from app.posture.ledger import DailyLedger
+    from app.coordination import CoordinatorNocToolClient, SocCoordinator
+    from app.graph.nodes import SocGraphRuntime
+    from app.redteam.exercise import RedTeamRunner
+    from app.redteam.policy import RedTeamGate
+    from app.redteam.validators import NonInvasiveValidator
 
     if force_shadow:
         settings = dataclasses.replace(settings, mode="shadow")
 
-    client = None
+    coordinator = SocCoordinator.from_settings(settings)
+    client: Any = CoordinatorNocToolClient(coordinator) if coordinator is not None else None
     disabled = os.getenv("SOC_AGENT_DISABLE_MCP", "").strip().lower() in {"1", "true", "yes", "on"}
-    if not disabled:
+    if not disabled and client is None:
         try:
             from app.tools.mcp_client import HyruleMCPClient
 
@@ -47,12 +53,22 @@ def _build_loop(settings, *, force_shadow: bool):
     )
     runtime = build_case_service_runtime(settings)
     ledger = DailyLedger.load(settings.posture.state_dir)
+    graph_runtime = SocGraphRuntime(store=runtime.store, mcp_runtime=mcp_runtime)
+    redteam_gate = RedTeamGate(settings.redteam)
+    validator = NonInvasiveValidator(
+        desired_state,
+        redteam_gate,
+        allowed_hosts=settings.posture.allowed_hosts,
+    )
     return PostureLoop(
         settings=settings,
         service=runtime.service,
         mcp_runtime=mcp_runtime,
         desired_state=desired_state,
         ledger=ledger,
+        graph_runtime=graph_runtime,
+        coordinator=coordinator,
+        redteam_runner=RedTeamRunner(desired_state, redteam_gate, validator=validator),
     )
 
 
@@ -67,10 +83,12 @@ async def _verify(settings) -> dict[str, Any]:
     from app.mcp_runtime import SocMCPRuntime
     from app.posture.desired_state import DesiredState
     from app.posture.verification import PostureVerificationLoop
+    from app.coordination import CoordinatorNocToolClient, SocCoordinator
 
     runtime = build_case_service_runtime(settings)
-    client = None
-    if os.getenv("SOC_AGENT_DISABLE_MCP", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    coordinator = SocCoordinator.from_settings(settings)
+    client: Any = CoordinatorNocToolClient(coordinator) if coordinator is not None else None
+    if client is None and os.getenv("SOC_AGENT_DISABLE_MCP", "").strip().lower() not in {"1", "true", "yes", "on"}:
         try:
             from app.tools.mcp_client import HyruleMCPClient
 
@@ -84,10 +102,58 @@ async def _verify(settings) -> dict[str, Any]:
         pin_sha=settings.posture.network_operations_pin_sha,
     )
     loop = PostureVerificationLoop(
-        service=runtime.service, verifier=runtime.verifier, mcp_runtime=mcp_runtime, desired_state=desired_state
+        service=runtime.service,
+        verifier=runtime.verifier,
+        mcp_runtime=mcp_runtime,
+        desired_state=desired_state,
+        coordinator=coordinator,
     )
     report = await loop.run_once(cycle_id="socctl-verify")
     return dataclasses.asdict(report)
+
+
+async def _run_probes(settings) -> dict[str, Any]:
+    from app.coordination import SocCoordinator
+    from app.posture.desired_state import DesiredState
+    from app.redteam.active import ActiveProbeExecutor, SocProbeWorker
+    from app.redteam.policy import RedTeamGate
+    from app.redteam.validators import NonInvasiveValidator
+
+    coordinator = SocCoordinator.from_settings(settings)
+    if coordinator is None:
+        return {"checked": 0, "completed": [], "failed": [], "error": "coordinator is disabled"}
+    desired_state = DesiredState.from_settings(
+        repo_dir=settings.posture.network_operations_dir or ".",
+        manifest_path=settings.posture.golden_manifest_path or None,
+        pin_sha=settings.posture.network_operations_pin_sha,
+    )
+    gate = RedTeamGate(settings.redteam)
+    ownership = NonInvasiveValidator(
+        desired_state,
+        gate,
+        allowed_hosts=settings.posture.allowed_hosts,
+    )
+    worker = SocProbeWorker(
+        coordinator.client,
+        ActiveProbeExecutor(gate, ownership),
+        mode=settings.mode,
+    )
+    return await worker.run_once()
+
+
+async def _run_handoffs(settings) -> dict[str, Any]:
+    from app.handoff_worker import SocHandoffWorker
+
+    loop = _build_loop(settings, force_shadow=False)
+    if loop.coordinator is None or loop.redteam_runner is None:
+        return {"checked": 0, "completed": [], "failed": [], "error": "coordinator is disabled"}
+    worker = SocHandoffWorker(
+        loop.coordinator.client,
+        loop.service,
+        loop.coordinator,
+        loop.redteam_runner,
+    )
+    return await worker.run_once()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -103,6 +169,14 @@ def main(argv: list[str] | None = None) -> int:
     run_once.add_argument("--hosts", default="", help="Comma-separated host override")
     posture_sub.add_parser("verify", help="Re-verify cases awaiting a positive re-read")
 
+    probes = sub.add_parser("probes", help="Process senior-approved RT-2 probe work")
+    probes_sub = probes.add_subparsers(dest="probes_command", required=True)
+    probes_sub.add_parser("run-once", help="Process queued probe plans once")
+
+    handoffs = sub.add_parser("handoffs", help="Process generic inbound LHP-v2 handoffs")
+    handoffs_sub = handoffs.add_subparsers(dest="handoffs_command", required=True)
+    handoffs_sub.add_parser("run-once", help="Process queued SOC capability requests once")
+
     args = parser.parse_args(argv)
     settings = load_soc_settings()
 
@@ -117,6 +191,8 @@ def main(argv: list[str] | None = None) -> int:
                     "allowed_hosts": settings.posture.allowed_hosts,
                     "network_operations_dir": settings.posture.network_operations_dir,
                     "lhp_enabled": settings.loop_handoff.enabled,
+                    "coordinator_enabled": settings.coordination.enabled,
+                    "active_probe_execution": settings.mode == "probe_live",
                 },
                 indent=2,
             )
@@ -131,6 +207,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "posture" and args.posture_command == "verify":
         print(json.dumps(asyncio.run(_verify(settings)), indent=2))
+        return 0
+
+    if args.command == "probes" and args.probes_command == "run-once":
+        print(json.dumps(asyncio.run(_run_probes(settings)), indent=2))
+        return 0
+
+    if args.command == "handoffs" and args.handoffs_command == "run-once":
+        print(json.dumps(asyncio.run(_run_handoffs(settings)), indent=2))
         return 0
 
     parser.print_help()

@@ -7,6 +7,7 @@ store (tests / ephemeral shadow).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from app.cases.policy import SecurityCasePolicy
@@ -31,7 +32,12 @@ def build_case_service_runtime(settings: SocAgentSettings | None = None) -> Case
     )
     state_dir = settings.posture.state_dir
     store: SecurityCaseStore
-    if state_dir:
+    database_url = os.getenv("SOC_DATABASE_URL", "").strip()
+    if database_url:
+        from app.cases.postgres import PostgresSecurityCaseStore
+
+        store = PostgresSecurityCaseStore(database_url)
+    elif state_dir:
         try:
             store = JsonlSecurityCaseStore(state_dir)
         except OSError:
